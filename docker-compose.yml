@@ -1,0 +1,60 @@
+﻿services:
+  llm-1:
+    build: ./llm-service
+    container_name: normo-llm-1
+    environment:
+      - LLM_MODEL=qwen2:1.5b
+      - SERVICE_NAME=Judge-Alpha
+    volumes:
+      - ./models/judge-1:/root/.ollama
+    networks:
+      - normocontrol-net
+
+  llm-2:
+    build: ./llm-service
+    container_name: normo-llm-2
+    environment:
+      - LLM_MODEL=gemma2:2b
+      - SERVICE_NAME=Judge-Beta
+    volumes:
+      - ./models/judge-2:/root/.ollama
+    networks:
+      - normocontrol-net
+
+  llm-3:
+    build: ./llm-service
+    container_name: normo-llm-3
+    environment:
+      - LLM_MODEL=qwen2:1.5b
+      - SERVICE_NAME=Judge-Gamma
+    volumes:
+      - ./models/judge-3:/root/.ollama
+    networks:
+      - normocontrol-net
+
+  file-proxy:
+    build: ./file-proxy
+    container_name: normo-file-proxy
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./reports:/app/reports
+    depends_on:
+      - llm-1
+      - llm-2
+      - llm-3
+    networks:
+      - normocontrol-net
+
+  normocontrol-service:
+    build: ./normocontrol-service
+    container_name: normo-service
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - normocontrol-net
+
+networks:
+  normocontrol-net:
+    driver: bridge
