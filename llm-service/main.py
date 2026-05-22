@@ -1,57 +1,79 @@
-﻿from fastapi import FastAPI
+from fastapi import FastAPI
 from pydantic import BaseModel
 import httpx
 import os
 import logging
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("llm_service")
 
 app = FastAPI(title=os.getenv("SERVICE_NAME", "Normocontrol-Judge"))
 
-LLM_MODEL = os.getenv("LLM_MODEL", "gemma2:2b")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 SYSTEM_PROMPT = """
-Ты — интеллектуальный фильтр для системы нормоконтроля. Проверь, имеет ли смысл отправлять файл на полную проверку.
+оцени текст от 0 до 100. верни только число.
 
-Проверь наличие этих элементов:
-1. Введение (или раздел, который его заменяет по смыслу)
-2. Заключение (или выводы)
-3. Список литературы (минимум 3 источника)
-4. Текст не слишком короткий (больше 500 символов)
+правила:
+- есть слово "введение" → 40 баллов
+- есть слово "заключение" → 40 баллов
+- длина текста больше 500 символов → 20 баллов
 
-Правило: если присутствуют хотя бы 3 элемента из 4 → ответь "good", иначе "bad".
+максимум 100.
 
-Ответь только одним словом: good или bad.
+пример:
+- текст: "введение ... заключение ..." (длина >500) → 100
+- текст: "введение ... заключение ..." (длина <500) → 80
+- текст: "введение ..." (длина >500) → 60
+- текст: "заключение ..." (длина >500) → 60
+- текст: "просто текст" → 0
+
+верни только число. ничего кроме числа.
 """
 
 class CheckRequest(BaseModel):
     prompt: str
 
+def extract_score(raw_response: str) -> int:
+    """Извлекает число из ответа модели"""
+    # Ищем число в ответе
+    match = re.search(r'\b([0-9]{1,3})\b', raw_response)
+    if match:
+        score = int(match.group(1))
+        return min(100, max(0, score))  # Ограничиваем от 0 до 100
+    return 0
+
 @app.post("/check")
 async def check(request: CheckRequest):
     logger.info(f"[{os.getenv('SERVICE_NAME')}] Проверка...")
     
-    full_prompt = f"{SYSTEM_PROMPT}\n\nТекст:\n{request.prompt[:2000]}\n\nОтвет:"
+    full_prompt = f"{SYSTEM_PROMPT}\n\nтекст:\n{request.prompt[:3000]}\n\nоценка:"
     
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=180.0) as client:
         response = await client.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             json={
                 "model": LLM_MODEL,
                 "prompt": full_prompt,
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 50}
+                "options": {"temperature": 0.0, "num_predict": 20}
             }
         )
         result = response.json()
-        raw_response = result.get("response", "").strip().lower()
+        raw_response = result.get("response", "").strip()
         
-        verdict = "good" if "good" in raw_response else "bad"
+        logger.info(f"[{os.getenv('SERVICE_NAME')}] Ответ модели: {raw_response}")
         
-        logger.info(f"[{os.getenv('SERVICE_NAME')}] Вердикт: {verdict}")
-        return {"verdict": verdict}
+        # Извлекаем оценку
+        score = extract_score(raw_response)
+        
+        # Превращаем в good/bad (порог 70)
+        verdict = "good" if score >= 70 else "bad"
+        
+        logger.info(f"[{os.getenv('SERVICE_NAME')}] Оценка: {score}, Вердикт: {verdict}")
+        return {"verdict": verdict, "score": score}
 
 @app.get("/health")
 async def health():
